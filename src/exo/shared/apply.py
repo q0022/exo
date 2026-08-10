@@ -379,10 +379,15 @@ def apply_node_gathered_info(event: NodeGatheredInfo, state: State) -> State:
             new_identity = current_identity.model_copy(
                 update={"friendly_name": info.friendly_name}
             )
-            update["node_identities"] = {
-                **state.node_identities,
-                event.node_id: new_identity,
-            }
+            node_ids = dict(state.node_identities)
+            node_ids[event.node_id] = new_identity
+            if info.friendly_name:
+                for old_id, ident in list(node_ids.items()):
+                    if old_id != event.node_id and ident.friendly_name == info.friendly_name:
+                        topology.remove_node(old_id)
+                        node_ids.pop(old_id, None)
+            update["node_identities"] = node_ids
+            update["topology"] = topology
         case StaticNodeInformation():
             current_identity = state.node_identities.get(event.node_id, NodeIdentity())
             new_identity = current_identity.model_copy(

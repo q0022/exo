@@ -33,7 +33,9 @@ class RawMacmonMetrics(BaseModel, extra="ignore"):
     memory: _MemoryMetrics
     ecpu_usage: tuple[int, float]  # freq mhz, usage %
     pcpu_usage: tuple[int, float]  # freq mhz, usage %
-    gpu_usage: tuple[int, float]  # freq mhz, usage %
+    gpu_usage: tuple[int, float] = (0, 0.0)  # freq mhz, usage %
+    gpu_active_ratio: float = 0.0
+    cpu_usage_pct: float = 0.0
     all_power: float
     ane_power: float
     cpu_power: float
@@ -49,12 +51,14 @@ class MacmonMetrics(TaggedModel):
 
     @classmethod
     def from_raw(cls, raw: RawMacmonMetrics) -> Self:
+        gpu_pct = raw.gpu_active_ratio if raw.gpu_active_ratio > 0 else raw.gpu_usage[1]
+        cpu_pct = raw.cpu_usage_pct if raw.cpu_usage_pct > 0 else raw.pcpu_usage[1]
         return cls(
             system_profile=SystemPerformanceProfile(
-                gpu_usage=raw.gpu_usage[1],
+                gpu_usage=gpu_pct,
                 temp=raw.temp.gpu_temp_avg,
                 sys_power=raw.sys_power,
-                pcpu_usage=raw.pcpu_usage[1],
+                pcpu_usage=cpu_pct,
                 ecpu_usage=raw.ecpu_usage[1],
             ),
             memory=MemoryUsage.from_bytes(

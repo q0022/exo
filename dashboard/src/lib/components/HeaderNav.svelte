@@ -280,6 +280,27 @@
       <span class="hidden sm:inline">Downloads</span>
     </a>
     <a
+      href="/#/monitor"
+      class="text-xs md:text-sm text-white/70 hover:text-exo-yellow transition-colors tracking-wider uppercase flex items-center gap-1.5 md:gap-2 cursor-pointer"
+      title="Cluster hardware & live telemetry monitor"
+    >
+      <svg
+        class="w-4 h-4 text-exo-yellow"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+        <polyline points="6 10 10 7 14 13 18 9" />
+      </svg>
+      <span class="hidden sm:inline">Monitor</span>
+    </a>
+    <a
       href="/#/integrations"
       class="text-xs md:text-sm text-white/70 hover:text-exo-yellow transition-colors tracking-wider uppercase flex items-center gap-1.5 md:gap-2 cursor-pointer"
       title="Integration configs for external tools"

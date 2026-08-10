@@ -461,6 +461,12 @@ function transformTopology(
         gpu_usage:
           system?.gpuUsage !== undefined ? [0, system.gpuUsage] : undefined,
         sys_power: system?.sysPower,
+        system_profile: {
+          gpu_usage: system?.gpuUsage ?? 0,
+          pcpu_usage: system?.pcpuUsage ?? 0,
+          ecpu_usage: system?.ecpuUsage ?? 0,
+          sys_power: system?.sysPower ?? 0,
+        },
       },
       last_macmon_update: Date.now() / 1000,
       friendly_name: identity?.friendlyName,

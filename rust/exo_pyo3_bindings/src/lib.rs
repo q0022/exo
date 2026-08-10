@@ -24,6 +24,7 @@ pub(crate) mod r#const {
 
 /// Namespace for crate-wide extension traits/methods
 pub(crate) mod ext {
+    use std::future::Future;
     use crate::allow_threading::AllowThreads;
     use extend::ext;
     use pyo3::exceptions::{PyConnectionError, PyRuntimeError};

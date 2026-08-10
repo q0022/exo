@@ -1,5 +1,11 @@
 # AGENTS.md
 
+## 🚨 Core Collaboration Rule (CRITICAL)
+**กฎเหล็กในการทำงานกับผู้ใช้ (พี่บอย):**
+1. ก่อนที่จะลงมือทำอะไร (รันคำสั่ง, แก้ไขโค้ด, หรือตรวจสอบไฟล์) **ต้องทำการปรึกษาและอธิบายเหตุผลให้พี่บอยฟังก่อนเสมอ**
+2. **ต้องรอให้ได้ข้อสรุปและคำสั่งให้ดำเนินการจากพี่บอยก่อน** ถึงจะลงมือทำตามที่คุยกันไว้
+3. ห้าม Agent แอบรันคำสั่งหรือแก้ไขอะไรเองโดยพลการเด็ดขาด (No autonomous execution without explicit permission).
+
 This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Project Overview
@@ -194,3 +200,9 @@ GitHub's API doesn't support direct image upload for PR comments. Workaround:
    git push origin <branch>
    ```
    The images still render in the PR comment because they reference the permanent commit SHA.
+
+## macOS Telemetry Monitoring Architecture
+
+- **Primary Path**: `macmon` daemon (`~/.cargo/bin/macmon`) reads Apple Silicon SMC performance registers (`pcpu_usage`, `ecpu_usage`, Metal GPU, Watts).
+- **Native Fallback**: `psutil` + `ioreg` (`_monitor_mac_system` in `info_gatherer.py`). Uses `psutil.cpu_percent(interval=None)` (exact btop method) and `ioreg -r -c IOAccelerator -a` (`Device Utilization %`).
+- **Frontend Dashboard**: Parsed separately in `parseMacTelemetry(sysProfile, tick)` in `monitor/+page.svelte` preserving unrounded float precision and btop-style core shifting jitter for smooth live SVG sparklines and block meters.

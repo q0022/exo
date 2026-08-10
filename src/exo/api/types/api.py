@@ -252,9 +252,10 @@ class HuggingFaceSearchResult(BaseModel):
 
 class PlaceInstanceParams(BaseModel):
     model_id: ModelId
-    sharding: Sharding = Sharding.Pipeline
-    instance_meta: InstanceMeta = InstanceMeta.MlxRing
+    sharding: Sharding | None = None
+    instance_meta: InstanceMeta | None = None
     min_nodes: int = 1
+    preferred_role: Literal["prefill", "decode"] | None = None
 
 
 class CreateInstanceParams(BaseModel):

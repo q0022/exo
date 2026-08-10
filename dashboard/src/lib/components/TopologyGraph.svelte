@@ -362,6 +362,26 @@
       pairMap.set(key, entry);
     });
 
+    // Fallback: If no explicit edge events recorded yet but 2+ active nodes exist, link active nodes
+    if (pairMap.size === 0 && nodesWithPositions.length >= 2) {
+      for (let i = 0; i < nodesWithPositions.length; i++) {
+        for (let j = i + 1; j < nodesWithPositions.length; j++) {
+          const nodeA = nodesWithPositions[i].id;
+          const nodeB = nodesWithPositions[j].id;
+          const a = nodeA < nodeB ? nodeA : nodeB;
+          const b = nodeA < nodeB ? nodeB : nodeA;
+          const key = `${a}|${b}`;
+          pairMap.set(key, {
+            a,
+            b,
+            aToB: true,
+            bToA: true,
+            connections: [],
+          });
+        }
+      }
+    }
+
     pairMap.forEach((entry) => {
       const posA = positionById[entry.a];
       const posB = positionById[entry.b];

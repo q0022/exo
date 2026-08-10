@@ -233,6 +233,19 @@ def _require_disaggregation_enabled() -> None:
         )
 
 
+from starlette.responses import Response
+from starlette.types import Scope
+
+
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
 class API:
     def __init__(
         self,
@@ -263,10 +276,7 @@ class API:
         self.app = FastAPI()
 
         @self.app.middleware("http")
-        async def _log_requests(  # pyright: ignore[reportUnusedFunction]
-            request: Request,
-            call_next: Callable[[Request], Awaitable[StreamingResponse]],
-        ) -> StreamingResponse:
+        async def log_requests(request: Request, call_next: Callable[..., Awaitable[Any]]) -> Any:
             logger.debug(f"API request: {request.method} {request.url.path}")
             return await call_next(request)
 
@@ -276,7 +286,7 @@ class API:
 
         self.app.mount(
             "/",
-            StaticFiles(
+            NoCacheStaticFiles(
                 directory=DASHBOARD_DIR,
                 html=True,
             ),
@@ -424,11 +434,14 @@ class API:
             ) from e
 
     async def place_instance(self, payload: PlaceInstanceParams):
+        sharding = payload.sharding or Sharding.Pipeline
+        instance_meta = payload.instance_meta or InstanceMeta.MlxRing
         command = PlaceInstance(
             model_card=await ModelCard.load(payload.model_id),
-            sharding=payload.sharding,
-            instance_meta=payload.instance_meta,
+            sharding=sharding,
+            instance_meta=instance_meta,
             min_nodes=payload.min_nodes,
+            preferred_role=payload.preferred_role,
         )
         await self._send(command)
 
@@ -469,6 +482,7 @@ class API:
         sharding: Sharding = Sharding.Pipeline,
         instance_meta: InstanceMeta = InstanceMeta.MlxRing,
         min_nodes: int = 1,
+        preferred_role: str | None = None,
     ) -> Instance:
         model_card = await ModelCard.load(model_id)
 

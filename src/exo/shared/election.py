@@ -57,6 +57,7 @@ class Election:
         command_receiver: Receiver[ForwarderCommand],
         is_candidate: bool = True,
         seniority: int = 0,
+        force_master: bool = False,
     ):
         # If we aren't a candidate, simply don't increment seniority.
         # For reference: This node can be elected master if all nodes are not master candidates
@@ -64,6 +65,7 @@ class Election:
         self.seniority = seniority if is_candidate else -1
         self.clock = 0
         self.node_id = node_id
+        self.force_master = force_master
         self.commands_seen = 0
         # Every node spawns as master
         self.current_session: SessionId = SessionId(
@@ -253,12 +255,15 @@ class Election:
 
     def _election_status(self, clock: int | None = None) -> ElectionMessage:
         c = self.clock if clock is None else clock
+        if self.current_session.master_node_id == self.node_id:
+            proposed = self.current_session
+        elif not self.force_master and self.current_session.master_node_id is not None:
+            proposed = self.current_session
+        else:
+            proposed = SessionId(master_node_id=self.node_id, election_clock=c)
+
         return ElectionMessage(
-            proposed_session=(
-                self.current_session
-                if self.current_session.master_node_id == self.node_id
-                else SessionId(master_node_id=self.node_id, election_clock=c)
-            ),
+            proposed_session=proposed,
             clock=c,
             seniority=self.seniority,
             commands_seen=self.commands_seen,

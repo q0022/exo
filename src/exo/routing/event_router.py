@@ -59,8 +59,8 @@ class EventRouter:
 
     _nack_cancel_scope: CancelScope | None = field(init=False, default=None)
     _nack_attempts: int = field(init=False, default=0)
-    _nack_base_seconds: float = field(init=False, default=0.5)
-    _nack_cap_seconds: float = field(init=False, default=10.0)
+    _nack_base_seconds: float = field(init=False, default=0.2)
+    _nack_cap_seconds: float = field(init=False, default=2.0)
 
     async def run(self):
         try:
@@ -156,8 +156,11 @@ class EventRouter:
         # This function is started whenever we receive an event that is out of sequence.
         # It is cancelled as soon as we receiver an event that is in sequence.
 
-        if since_idx < 0:
-            logger.warning(f"Negative value encountered for nack request {since_idx=}")
+        if since_idx < 0 or self._nack_attempts > 4:
+            if self._nack_attempts > 4:
+                logger.warning(
+                    f"Nack attempt {self._nack_attempts} exceeded threshold, resetting since_idx from {since_idx} to 0"
+                )
             since_idx = 0
 
         with CancelScope() as scope:

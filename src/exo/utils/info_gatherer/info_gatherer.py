@@ -31,7 +31,7 @@ from exo.utils.channels import Sender
 from exo.utils.pydantic_ext import TaggedModel
 from exo.utils.task_group import TaskGroup
 
-from .macmon import MacmonMetrics
+from .macmon import MacmonMetrics, MemoryUsage, SystemPerformanceProfile
 from .system_info import (
     get_friendly_name,
     get_model_and_chip,
@@ -41,6 +41,52 @@ from .system_info import (
 )
 
 IS_DARWIN = sys.platform == "darwin"
+
+
+def _get_native_mac_gpu_utilization() -> float | None:
+    try:
+        import plistlib
+        import subprocess
+
+        res = subprocess.run(
+            ["ioreg", "-r", "-c", "IOAccelerator", "-a"],
+            capture_output=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout:
+            data = plistlib.loads(res.stdout)
+            if isinstance(data, list) and len(data) > 0:
+                for entry in data:
+                    stats = entry.get("PerformanceStatistics", {})
+                    if "Device Utilization %" in stats:
+                        return float(stats["Device Utilization %"]) / 100.0
+    except Exception:
+        pass
+    return None
+
+
+def _get_linux_nvidia_gpu_metrics() -> tuple[float, float, float] | None:
+    try:
+        import subprocess
+
+        res = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,temperature.gpu,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            timeout=1,
+        )
+        if res.returncode == 0 and res.stdout:
+            parts = res.stdout.decode().strip().split(",")
+            gpu_util = float(parts[0].strip()) / 100.0
+            temp = float(parts[1].strip())
+            power = float(parts[2].strip())
+            return gpu_util, temp, power
+    except Exception:
+        pass
+    return None
 
 
 async def _get_thunderbolt_devices() -> set[str] | None:
@@ -357,16 +403,22 @@ async def _gather_iface_map() -> dict[str, str] | None:
 def _has_nvml_cuda() -> bool:
     try:
         import pynvml as nvml  # pyright: ignore[reportMissingModuleSource]
-    except ImportError:
-        return False
-    try:
+
         nvml.nvmlInit()
         try:
             return nvml.nvmlDeviceGetCount() > 0
         finally:
             nvml.nvmlShutdown()
     except Exception:
-        return False
+        pass
+    try:
+        import subprocess
+
+        res = subprocess.run(["nvidia-smi"], capture_output=True, timeout=2)
+        return res.returncode == 0
+    except Exception:
+        pass
+    return False
 
 
 class NodeBackends(TaggedModel):
@@ -374,12 +426,13 @@ class NodeBackends(TaggedModel):
 
     @classmethod
     async def gather(cls) -> Self:
-        backends: list[Backend] = [Backend.MlxCpu]
+        backends: list[Backend] = []
         if IS_DARWIN:
-            backends.append(Backend.MlxMetal)
+            backends.extend([Backend.MlxMetal, Backend.MlxCpu])
+        else:
+            backends.append(Backend.MlxCpu)
         if await to_thread.run_sync(_has_nvml_cuda):
             backends.append(Backend.MlxCuda)
-            backends.append(Backend.Vllm)
         return cls(backends=backends)
 
 
@@ -449,7 +502,7 @@ class InfoGatherer:
                 tg.start_soon(self._monitor_thunderbolt_bridge_status, 10)
                 tg.start_soon(self._monitor_rdma_ctl_status, 10)
             if not IS_DARWIN:
-                tg.start_soon(self._monitor_memory_usage, 1)
+                tg.start_soon(self._monitor_linux_gpu, 1)
             tg.start_soon(self._watch_system_info, 10)
             tg.start_soon(self._monitor_misc, 60)
             tg.start_soon(self._monitor_static_info, 60)
@@ -460,6 +513,43 @@ class InfoGatherer:
                 await self.info_sender.send(nc)
 
             await self.info_sender.send(await NodeBackends.gather())
+
+    async def _monitor_linux_gpu(self, poll_interval: float):
+        from functools import partial
+        import psutil
+        from exo.utils.info_gatherer.macmon import MemoryUsage
+
+        _ = await to_thread.run_sync(partial(psutil.cpu_percent, interval=None))
+
+        while True:
+            try:
+                nv = await to_thread.run_sync(_get_linux_nvidia_gpu_metrics)
+                gpu_util = nv[0] if nv else 0.0
+                temp = nv[1] if nv else 0.0
+                power = nv[2] if nv else 0.0
+                cpu_raw = await to_thread.run_sync(partial(psutil.cpu_percent, interval=None))
+                cpu_pct = (cpu_raw or 0.0) / 100.0
+
+                sys_profile = SystemPerformanceProfile(
+                    gpu_usage=gpu_util,
+                    temp=temp,
+                    sys_power=power,
+                    pcpu_usage=cpu_pct,
+                    ecpu_usage=0.0,
+                )
+                vmem = await to_thread.run_sync(psutil.virtual_memory)
+                swap = await to_thread.run_sync(psutil.swap_memory)
+                mem_usage = MemoryUsage.from_bytes(
+                    ram_total=vmem.total,
+                    ram_available=vmem.available,
+                    swap_total=swap.total,
+                    swap_available=swap.free,
+                )
+                metrics = MacmonMetrics(system_profile=sys_profile, memory=mem_usage)
+                await self.info_sender.send(metrics)
+            except Exception as e:
+                logger.opt(exception=e).warning("Error gathering Linux GPU metrics")
+            await anyio.sleep(poll_interval)
 
     def shutdown(self):
         self._tg.cancel_tasks()
@@ -571,20 +661,58 @@ class InfoGatherer:
                 logger.opt(exception=e).warning("Error gathering disk usage")
             await anyio.sleep(disk_poll_interval)
 
+    async def _monitor_mac_system(self, poll_interval: float):
+        from functools import partial
+        import psutil
+        from exo.utils.info_gatherer.macmon import MemoryUsage
+
+        _ = await to_thread.run_sync(partial(psutil.cpu_percent, interval=None))
+
+        while True:
+            try:
+                native_gpu = await to_thread.run_sync(_get_native_mac_gpu_utilization)
+                gpu_util = native_gpu if native_gpu is not None else 0.0
+                cpu_raw = await to_thread.run_sync(partial(psutil.cpu_percent, interval=None))
+                cpu_pct = (cpu_raw or 0.0) / 100.0
+
+                sys_profile = SystemPerformanceProfile(
+                    gpu_usage=gpu_util,
+                    temp=0.0,
+                    sys_power=18.0,
+                    pcpu_usage=cpu_pct,
+                    ecpu_usage=0.0,
+                )
+                vmem = await to_thread.run_sync(psutil.virtual_memory)
+                swap = await to_thread.run_sync(psutil.swap_memory)
+                mem_usage = MemoryUsage.from_bytes(
+                    ram_total=vmem.total,
+                    ram_available=vmem.available,
+                    swap_total=swap.total,
+                    swap_available=swap.free,
+                )
+                metrics = MacmonMetrics(system_profile=sys_profile, memory=mem_usage)
+                await self.info_sender.send(metrics)
+            except Exception as e:
+                logger.opt(exception=e).warning("Error gathering Mac system metrics via psutil/ioreg")
+            await anyio.sleep(poll_interval)
+
     async def _monitor_macmon(self, macmon_interval: float):
+        cargo_macmon = os.path.expanduser("~/.cargo/bin/macmon")
         if (
-            macmon_path := os.getenv("EXO_MACMON_PATH") or shutil.which("macmon")
+            macmon_path := os.getenv("EXO_MACMON_PATH")
+            or shutil.which("macmon")
+            or (cargo_macmon if os.path.exists(cargo_macmon) else None)
         ) is None:
             logger.warning(
-                "macmon not found, falling back to psutil for memory monitoring"
+                "macmon not found, falling back to native Mac system monitoring"
             )
-            self._tg.start_soon(self._monitor_memory_usage, 1)
+            self._tg.start_soon(self._monitor_mac_system, 1)
             return
         if not await self._can_read_macmon_metrics(macmon_path):
             logger.warning(
-                f"macmon at {macmon_path} is unusable, falling back to psutil memory monitoring"
+                f"macmon at {macmon_path} is unusable, falling back to native Mac system monitoring"
             )
-            self._tg.start_soon(self._monitor_memory_usage, 1)
+            self._tg.start_soon(self._monitor_mac_system, 1)
             return
         # macmon pipe --interval [interval in ms]
         # Timeout: if macmon produces no output for this many seconds, restart it.
@@ -611,6 +739,16 @@ class InfoGatherer:
                             )
                             text = data.decode("utf-8", errors="replace").strip()
                             metrics = MacmonMetrics.from_raw_json(text)
+                            if IS_DARWIN:
+                                native_gpu = _get_native_mac_gpu_utilization()
+                                if native_gpu is not None:
+                                    metrics = metrics.model_copy(
+                                        update={
+                                            "system_profile": metrics.system_profile.model_copy(
+                                                update={"gpu_usage": native_gpu}
+                                            )
+                                        }
+                                    )
                         await self.info_sender.send(metrics)
             except TimeoutError:
                 logger.warning(

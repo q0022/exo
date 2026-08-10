@@ -64,6 +64,42 @@ def add_instance_to_placements(
     return {**current_instances, command.instance.instance_id: command.instance}
 
 
+def _cycle_role_score(
+    cycle: Cycle,
+    preferred_role: str | None,
+    node_identities: Mapping[NodeId, object],
+    node_backends: Mapping[NodeId, list[Backend]],
+) -> int:
+    if not preferred_role or len(cycle) != 1:
+        return 0
+    node_id = list(cycle)[0]
+    identity = node_identities.get(node_id)
+    backends = node_backends.get(node_id, [])
+
+    ip_list = []
+    if isinstance(identity, dict):
+        ip_list = identity.get("ipAddresses") or identity.get("ip_addresses") or []
+    elif hasattr(identity, "ip_addresses"):
+        ip_list = getattr(identity, "ip_addresses") or []
+    elif hasattr(identity, "ipAddresses"):
+        ip_list = getattr(identity, "ipAddresses") or []
+
+    backend_strs = [b.value if hasattr(b, "value") else str(b) for b in backends]
+
+    is_dgx = any(ip in ["192.168.2.2", "192.168.1.98"] for ip in ip_list) or any(
+        b in ["MlxCuda", "Vllm"] for b in backend_strs
+    )
+    is_mac = any(ip in ["192.168.2.1", "192.168.1.99"] for ip in ip_list) or any(
+        b in ["MlxMetal"] for b in backend_strs
+    )
+
+    if preferred_role == "prefill" and is_dgx:
+        return 100
+    if preferred_role == "decode" and is_mac:
+        return 100
+    return 0
+
+
 def _get_node_download_fraction(
     node_id: NodeId,
     model_id: ModelId,
@@ -113,8 +149,13 @@ def place_instance(
     required_nodes: set[NodeId] | None = None,
     download_status: Mapping[NodeId, Sequence[DownloadProgress]] | None = None,
     node_rdma_ctl: Mapping[NodeId, NodeRdmaCtlStatus] | None = None,
+    node_identities: Mapping[NodeId, object] | None = None,
 ) -> dict[InstanceId, Instance]:
+    resolved_identities = node_identities or {}
+    resolved_backends = node_backends or {}
+
     cycles = topology.get_cycles()
+
     candidate_cycles = list(filter(lambda it: len(it) >= command.min_nodes, cycles))
 
     # Filter to cycles containing all required nodes (subset matching)
@@ -232,6 +273,12 @@ def place_instance(
     selected_cycle = max(
         candidate_cycles,
         key=lambda cycle: (
+            _cycle_role_score(
+                cycle,
+                command.preferred_role,
+                resolved_identities,
+                resolved_backends,
+            ),
             _cycle_download_score(
                 cycle, command.model_card.model_id, resolved_download_status
             ),

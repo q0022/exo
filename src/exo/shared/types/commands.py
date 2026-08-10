@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import Field
 
 from exo.api.types import (
@@ -39,6 +40,7 @@ class PlaceInstance(BaseCommand):
     sharding: Sharding
     instance_meta: InstanceMeta
     min_nodes: int
+    preferred_role: Literal["prefill", "decode"] | None = None
 
 
 class CreateInstance(BaseCommand):
