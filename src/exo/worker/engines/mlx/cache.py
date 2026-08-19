@@ -572,9 +572,17 @@ def get_prefix_length(prompt: mx.array, cached_prompt: mx.array) -> int:
     if n == 0:
         return 0
 
-    equal = mx.equal(prompt[:n], cached_prompt[:n]).astype(mx.int32)
-    prefix_mask = mx.cumprod(equal)  # stays 1 until first mismatch, then 0 forever
-    return int(mx.sum(prefix_mask).item())
+    try:
+        p1 = prompt[:n].tolist()
+        p2 = cached_prompt[:n].tolist()
+        for i in range(n):
+            if p1[i] != p2[i]:
+                return i
+        return n
+    except Exception:
+        equal = mx.equal(prompt[:n], cached_prompt[:n]).astype(mx.int32)
+        prefix_mask = mx.cumprod(equal)  # stays 1 until first mismatch, then 0 forever
+        return int(mx.sum(prefix_mask).item())
 
 
 def get_available_memory() -> Memory:
