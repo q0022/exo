@@ -2,7 +2,7 @@ import socket
 import socketserver
 import threading
 from collections.abc import Callable
-from typing import BinaryIO, cast
+from typing import Any, BinaryIO, cast
 
 import msgspec
 from loguru import logger
