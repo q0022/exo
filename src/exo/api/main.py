@@ -275,6 +275,7 @@ class API:
 
         self.paused: bool = False
         self.paused_ev: anyio.Event = anyio.Event()
+        self.paused_ev.set()
 
         self.app = FastAPI()
 
@@ -356,7 +357,6 @@ class API:
         self.last_completed_election = result_clock
         self.paused = False
         self.paused_ev.set()
-        self.paused_ev = anyio.Event()
 
     def _setup_exception_handlers(self) -> None:
         self.app.exception_handler(HTTPException)(self.http_exception_handler)
@@ -2204,7 +2204,9 @@ class API:
         with self.election_receiver as ems:
             async for message in ems:
                 if message.clock > self.last_completed_election:
-                    self.paused = True
+                    if not self.paused:
+                        self.paused = True
+                        self.paused_ev = anyio.Event()
 
     async def _cleanup_expired_images(self):
         """Periodically clean up expired images from the store."""
@@ -2216,8 +2218,7 @@ class API:
                 logger.debug(f"Cleaned up {removed} expired images")
 
     async def _send(self, command: Command):
-        while self.paused:
-            await self.paused_ev.wait()
+        await self.paused_ev.wait()
         await self.command_sender.send(
             ForwarderCommand(origin=self._system_id, command=command)
         )
