@@ -502,7 +502,7 @@ class Master:
 
             # Clean up stale/orphan running tasks when runners are already ready
             for task_id, task in list(self.state.tasks.items()):
-                if task.task_status in (TaskStatus.Running, TaskStatus.Pending):
+                if task.task_status == TaskStatus.Running:
                     instance = self.state.instances.get(task.instance_id)
                     if instance and instance.shard_assignments.runner_to_shard:
                         runners_ready = True
