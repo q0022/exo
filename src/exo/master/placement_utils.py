@@ -336,6 +336,23 @@ def _find_connection_ip(
             yield connection.sink_multiaddr.ip_address
 
 
+def _get_local_subnets() -> set[str]:
+    try:
+        import psutil
+        subnets: set[str] = set()
+        for addrs in psutil.net_if_addrs().values():
+            for addr in addrs:
+                if addr.family == 2:  # AF_INET
+                    ip = addr.address
+                    if ip and not ip.startswith("127."):
+                        parts = ip.split(".")
+                        if len(parts) == 4:
+                            subnets.add(f"{parts[0]}.{parts[1]}.{parts[2]}.")
+        return subnets
+    except Exception:
+        return set()
+
+
 def find_ip_prioritised(
     node_id: NodeId,
     other_node_id: NodeId,
@@ -351,10 +368,21 @@ def find_ip_prioritised(
     if not ips:
         return None
 
-    # Always prioritize 10Gbps dedicated direct link (192.168.2.x)
-    direct_10g_ips = [ip for ip in ips if ip.startswith("192.168.2.")]
-    if direct_10g_ips:
-        return direct_10g_ips[0]
+    local_subnets = _get_local_subnets()
+
+    # Prioritize 10Gbps dedicated direct link (192.168.2.x) ONLY IF local machine also has 192.168.2.x active
+    if "192.168.2." in local_subnets:
+        direct_10g_ips = [ip for ip in ips if ip.startswith("192.168.2.")]
+        if direct_10g_ips:
+            return direct_10g_ips[0]
+
+    # Filter ips to reachable subnets sharing the local network
+    if local_subnets:
+        matching_ips = [
+            ip for ip in ips if any(ip.startswith(s) for s in local_subnets)
+        ]
+        if matching_ips:
+            ips = matching_ips
 
     other_network = node_network.get(other_node_id, NodeNetworkInfo())
     ip_to_type = {
