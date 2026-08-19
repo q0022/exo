@@ -70,6 +70,7 @@ def remote_prefill_fetch(
         wfile = sock.makefile("wb", buffering=256 * 1024)
         wstream: BinaryIO = cast(BinaryIO, cast(object, wfile))
         write_request(wstream, request)
+        wstream.flush()
 
         raw_stream = sock.makefile("rb", buffering=256 * 1024)
         stream: BinaryIO = cast(BinaryIO, cast(object, raw_stream))

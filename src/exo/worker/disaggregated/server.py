@@ -44,6 +44,7 @@ _request_decoder: msgspec.msgpack.Decoder[PrefillRequest] = msgspec.msgpack.Deco
 
 def write_request(stream: BinaryIO, job: PrefillRequest) -> None:
     write_frame(stream, _request_encoder.encode(job))
+    stream.flush()
 
 
 def read_request(stream: BinaryIO) -> PrefillRequest:
