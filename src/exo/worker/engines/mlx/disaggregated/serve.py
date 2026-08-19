@@ -51,6 +51,11 @@ def run_prefill_for_request(
         prefix_hit_length = max(0, prefix_hit_length - extra)
         new_tokens = max(0, n_tokens - prefix_hit_length)
     prefill_input = prompt_tokens[prefix_hit_length : prefix_hit_length + new_tokens]
+    if 0 < int(prefill_input.shape[0]) < 4:
+        pad_amount = 4 - int(prefill_input.shape[0])
+        pad_tokens = mx.zeros((pad_amount,), dtype=prefill_input.dtype)
+        prefill_input = mx.concatenate([prefill_input, pad_tokens])
+        new_tokens = int(prefill_input.shape[0])
 
     maybe_vision_ctx = contextlib.nullcontext()
     vision_embeddings: mx.array | None = None

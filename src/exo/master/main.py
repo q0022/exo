@@ -501,8 +501,10 @@ class Master:
 
             # time out dead nodes
             for node_id, time in list(self.state.last_seen.items()):
+                if node_id in connected_node_ids:
+                    continue
                 now = datetime.now(tz=timezone.utc)
-                if now - time > timedelta(seconds=30):
+                if now - time > timedelta(seconds=120):
                     logger.info(f"Manually removing node {node_id} due to inactivity")
                     await self.event_sender.send(NodeTimedOut(node_id=node_id))
 
