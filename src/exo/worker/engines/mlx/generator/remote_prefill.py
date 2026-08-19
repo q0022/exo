@@ -61,6 +61,15 @@ def remote_prefill(
         vision_embeddings_shape = list(vision_embeddings.shape)
         vision_embeddings_dtype = "float16"
 
+    safe_image_hashes: list[str] | None = (
+        [str(h) for h in image_hashes] if image_hashes is not None else None
+    )
+    safe_raw_images: list[str] | None = (
+        [str(img) for img in raw_images_base64]
+        if raw_images_base64 is not None
+        else None
+    )
+
     request = PrefillRequest(
         model_id=model_id,
         token_ids=cast(list[int], prompt_tokens.tolist()),
@@ -70,8 +79,8 @@ def remote_prefill(
         vision_embeddings_shape=vision_embeddings_shape,
         vision_embeddings_dtype=vision_embeddings_dtype,
         vision_image_token_id=vision_image_token_id,
-        image_hashes=image_hashes,
-        raw_images_base64=raw_images_base64,
+        image_hashes=safe_image_hashes,
+        raw_images_base64=safe_raw_images,
     )
     result = remote_prefill_fetch(
         endpoint, request, on_header=_on_header, on_kv_chunk=_on_chunk

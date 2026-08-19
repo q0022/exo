@@ -30,7 +30,13 @@ class PrefillRequest(msgspec.Struct):
     raw_images_bytes: list[bytes] | None = None
 
 
-_request_encoder = msgspec.msgpack.Encoder()
+def _enc_hook(obj: Any) -> Any:
+    if isinstance(obj, str):
+        return str(obj)
+    raise TypeError(f"Encoding objects of type {type(obj)} is unsupported")
+
+
+_request_encoder = msgspec.msgpack.Encoder(enc_hook=_enc_hook)
 _request_decoder: msgspec.msgpack.Decoder[PrefillRequest] = msgspec.msgpack.Decoder(
     PrefillRequest
 )
