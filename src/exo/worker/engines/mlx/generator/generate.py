@@ -637,10 +637,13 @@ def mlx_generate(
         if vision is not None
         else contextlib.nullcontext()
     )
+    image_hashes_list: list[str] | None = None
+    if task.image_hashes:
+        image_hashes_list = [str(h) for h in task.image_hashes.values()]
+
     use_remote = (
         len(prompt_tokens) > REMOTE_PREFILL_MIN_TOKENS
         and task.prefill_endpoint is not None
-        and vision is None
     )
     remote_prefilled = False
     prefill_tps = 0.0
@@ -659,6 +662,8 @@ def mlx_generate(
                     start_pos=prefix_hit_length,
                     vision_embeddings=vision.embeddings if vision is not None else None,
                     vision_image_token_id=vision.image_token_id if vision is not None else None,
+                    image_hashes=image_hashes_list,
+                    raw_images_base64=task.images if task.images else None,
                 )
                 remote_prefilled = True
             except Exception:

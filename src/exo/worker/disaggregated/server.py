@@ -25,6 +25,9 @@ class PrefillRequest(msgspec.Struct):
     vision_embeddings_shape: list[int] | None = None
     vision_embeddings_dtype: str | None = None
     vision_image_token_id: int | None = None
+    image_hashes: list[str] | None = None
+    raw_images_base64: list[str] | None = None
+    raw_images_bytes: list[bytes] | None = None
 
 
 _request_encoder = msgspec.msgpack.Encoder()

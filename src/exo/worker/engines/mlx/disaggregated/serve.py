@@ -13,6 +13,7 @@ from exo.worker.engines.mlx.cache import (
     make_kv_cache,
     snapshot_ssm_states,
 )
+from exo.worker.engines.mlx.disaggregated.vision_cache import global_vision_cache
 from exo.worker.engines.mlx.generator.generate import patch_embed_tokens
 from exo.worker.engines.mlx.generator.generate import prefill as mlx_prefill
 from exo.worker.engines.mlx.types import KVCacheType, Model
@@ -49,29 +50,59 @@ def run_prefill_for_request(
     prefill_input = remaining[:new_tokens]
 
     maybe_vision_ctx = contextlib.nullcontext()
-    if (
-        request.vision_embeddings_bytes is not None
-        and request.vision_embeddings_shape is not None
-    ):
+    vision_embeddings: mx.array | None = None
+    vision_image_token_id: int | None = request.vision_image_token_id
+    primary_hash: str | None = (
+        request.image_hashes[0] if request.image_hashes else None
+    )
+
+    # 1. Content-Addressable Checksum Registry Lookup (Fast Path)
+    if primary_hash:
+        cached_result = global_vision_cache.get(primary_hash)
+        if cached_result is not None:
+            vision_embeddings, cached_token_id = cached_result
+            if vision_image_token_id is None:
+                vision_image_token_id = cached_token_id
+
+    # 2. If Cache Miss, deserialize embeddings or compute from raw images
+    if vision_embeddings is None:
+        if (
+            request.vision_embeddings_bytes is not None
+            and request.vision_embeddings_shape is not None
+        ):
+            try:
+                dtype_name = request.vision_embeddings_dtype or "float16"
+                np_dtype = (
+                    np.float16 if dtype_name in ("float16", "bfloat16") else np.float32
+                )
+                arr_np = np.frombuffer(
+                    request.vision_embeddings_bytes, dtype=np_dtype
+                ).reshape(request.vision_embeddings_shape)
+                vision_embeddings = mx.array(arr_np)
+
+                # Store in Vision Registry Cache for subsequent stages on the same image
+                if primary_hash and vision_image_token_id is not None:
+                    global_vision_cache.put(
+                        primary_hash, vision_embeddings, vision_image_token_id
+                    )
+            except Exception:
+                logger.opt(exception=True).warning(
+                    "Failed to deserialize and patch vision embeddings on prefill server"
+                )
+
+    # 3. Patch embedding layer if vision embeddings are ready
+    if vision_embeddings is not None and vision_image_token_id is not None:
         try:
-            dtype_name = request.vision_embeddings_dtype or "float16"
-            np_dtype = (
-                np.float16 if dtype_name in ("float16", "bfloat16") else np.float32
-            )
-            arr_np = np.frombuffer(
-                request.vision_embeddings_bytes, dtype=np_dtype
-            ).reshape(request.vision_embeddings_shape)
-            vision_embeddings = mx.array(arr_np)
             maybe_vision_ctx = patch_embed_tokens(
                 model,
                 vision_embeddings,
                 start_offset=prefix_hit_length,
                 token_count=new_tokens,
-                image_token_id=request.vision_image_token_id,
+                image_token_id=vision_image_token_id,
             )
         except Exception:
             logger.opt(exception=True).warning(
-                "Failed to deserialize and patch vision embeddings on prefill server"
+                "Failed to patch vision embeddings into model"
             )
 
     if int(prefill_input.shape[0]) > 0:

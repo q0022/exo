@@ -27,6 +27,8 @@ def remote_prefill(
     start_pos: int = 0,
     vision_embeddings: mx.array | None = None,
     vision_image_token_id: int | None = None,
+    image_hashes: list[str] | None = None,
+    raw_images_base64: list[str] | None = None,
 ) -> tuple[float, int, list[CacheSnapshot]]:
     t0 = time.perf_counter()
     total_prompt_tokens = int(prompt_tokens.shape[0])
@@ -68,6 +70,8 @@ def remote_prefill(
         vision_embeddings_shape=vision_embeddings_shape,
         vision_embeddings_dtype=vision_embeddings_dtype,
         vision_image_token_id=vision_image_token_id,
+        image_hashes=image_hashes,
+        raw_images_base64=raw_images_base64,
     )
     result = remote_prefill_fetch(
         endpoint, request, on_header=_on_header, on_kv_chunk=_on_chunk
