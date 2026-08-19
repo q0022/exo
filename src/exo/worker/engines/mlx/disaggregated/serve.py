@@ -45,8 +45,7 @@ def run_prefill_for_request(
         cache = make_kv_cache(model)
         remaining = prompt_tokens
 
-    target_offset = max(0, n_tokens - 2)
-    new_tokens = max(0, target_offset - prefix_hit_length)
+    new_tokens = max(0, n_tokens - prefix_hit_length)
     prefill_input = remaining[:new_tokens]
 
     maybe_vision_ctx = contextlib.nullcontext()
@@ -105,7 +104,7 @@ def run_prefill_for_request(
                 "Failed to patch vision embeddings into model"
             )
 
-    if int(prefill_input.shape[0]) > 0:
+    if int(prefill_input.shape[0]) >= 4:
         sampler = make_sampler(temp=1.0)
         with maybe_vision_ctx:
             _ = mlx_prefill(

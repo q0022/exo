@@ -641,8 +641,10 @@ def mlx_generate(
     if task.image_hashes:
         image_hashes_list = [str(h) for h in task.image_hashes.values()]
 
+    uncached_count = len(prompt_tokens) - 1
     use_remote = (
-        len(prompt_tokens) > REMOTE_PREFILL_MIN_TOKENS
+        uncached_count >= 16
+        and (len(prompt_tokens) + prefix_hit_length) > REMOTE_PREFILL_MIN_TOKENS
         and task.prefill_endpoint is not None
     )
     remote_prefilled = False
