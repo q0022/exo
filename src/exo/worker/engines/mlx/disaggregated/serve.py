@@ -46,7 +46,11 @@ def run_prefill_for_request(
         remaining = prompt_tokens
 
     new_tokens = max(0, n_tokens - prefix_hit_length)
-    prefill_input = remaining[:new_tokens]
+    if 0 < new_tokens < 4 and prefix_hit_length > 0:
+        extra = 4 - new_tokens
+        prefix_hit_length = max(0, prefix_hit_length - extra)
+        new_tokens = max(0, n_tokens - prefix_hit_length)
+    prefill_input = prompt_tokens[prefix_hit_length : prefix_hit_length + new_tokens]
 
     maybe_vision_ctx = contextlib.nullcontext()
     vision_embeddings: mx.array | None = None
