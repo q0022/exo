@@ -202,11 +202,14 @@ class ExoBatchGenerator:
             if vision is not None
             else contextlib.nullcontext()
         )
+        image_hashes_list: list[str] | None = None
+        if task_params.image_hashes:
+            image_hashes_list = [str(h) for h in task_params.image_hashes.values()]
+
         uncached_count = len(prompt_tokens)
         use_remote = (
             uncached_count > REMOTE_PREFILL_MIN_TOKENS
             and task_params.prefill_endpoint is not None
-            and vision is None
         )
 
         _prefill_tps: float = 0.0
@@ -224,6 +227,10 @@ class ExoBatchGenerator:
                         request_id=str(uuid.uuid4()),
                         model_id=str(task_params.model),
                         start_pos=prefix_hit_length,
+                        vision_embeddings=vision.embeddings if vision is not None else None,
+                        vision_image_token_id=vision.image_token_id if vision is not None else None,
+                        image_hashes=image_hashes_list,
+                        raw_images_base64=task_params.images if task_params.images else None,
                     )
                     remote_prefilled = True
                 except Exception:
