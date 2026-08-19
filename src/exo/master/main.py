@@ -15,7 +15,7 @@ from exo.routing.event_router import (
     EventRouterBrokenResourceError,
     EventRouterClosedResourceError,
 )
-from exo.shared.apply import apply
+from exo.shared.apply import apply, apply_node_gathered_info
 from exo.shared.constants import EXO_EVENT_LOG_DIR, EXO_TRACING_ENABLED
 from exo.shared.types.commands import (
     AddCustomModelCard,
@@ -57,7 +57,7 @@ from exo.shared.types.events import (
     TracesCollected,
     TracesMerged,
 )
-from exo.shared.types.instance_link import InstanceLink
+from exo.shared.types.instance_link import InstanceLink, InstanceLinkId
 from exo.shared.types.state import State
 from exo.shared.types.tasks import (
     ImageEdits as ImageEditsTask,
@@ -72,10 +72,13 @@ from exo.shared.types.tasks import (
 from exo.shared.types.tasks import (
     TextGeneration as TextGenerationTask,
 )
-from exo.shared.types.worker.instances import InstanceId
+from exo.shared.types.worker.instances import Instance, InstanceId, InstanceMeta
+from exo.shared.types.worker.runners import RunnerReady
+from exo.shared.types.worker.shards import Sharding
 from exo.utils.channels import Receiver, Sender
 from exo.utils.disk_event_log import DiskEventLog
 from exo.utils.event_buffer import MultiSourceBuffer
+from exo.utils.info_gatherer.info_gatherer import MacmonMetrics
 from exo.utils.task_group import TaskGroup
 
 
@@ -110,9 +113,18 @@ def _prefill_endpoint_for(state: State, decode_instance_id: InstanceId) -> str |
             port = state.prefill_server_ports.get(runner_id)
             if port is None:
                 continue
-            ip = find_ip_prioritised(
-                decode_node, node_id, state.topology, state.node_network, ring=True
-            )
+            # Prioritize 10Gbps direct interface (192.168.2.*) first
+            ip: str | None = None
+            other_network = state.node_network.get(node_id)
+            if other_network:
+                for iface in other_network.interfaces:
+                    if iface.ip_address.startswith("192.168.2."):
+                        ip = iface.ip_address
+                        break
+            if ip is None:
+                ip = find_ip_prioritised(
+                    decode_node, node_id, state.topology, state.node_network, ring=True
+                )
             if ip is None:
                 continue
             return f"{ip}:{port}"
@@ -449,12 +461,16 @@ class Master:
                                 InstanceLinkDeleted(link_id=command.link_id)
                             )
                         case RequestEventLog():
-                            # We should just be able to send everything, since other buffers will ignore old messages
-                            # rate limit to 1000 at a time
-                            end = min(command.since_idx + 1000, len(self._event_log))
+                            start_idx = command.since_idx
+                            if start_idx > len(self._event_log):
+                                logger.warning(
+                                    f"RequestEventLog since_idx={start_idx} exceeds event log length {len(self._event_log)}. Sending from 0."
+                                )
+                                start_idx = 0
+                            end = min(start_idx + 1000, len(self._event_log))
                             for i, event in enumerate(
-                                self._event_log.read_range(command.since_idx, end),
-                                start=command.since_idx,
+                                self._event_log.read_range(start_idx, end),
+                                start=start_idx,
                             ):
                                 await self._send_indexed_event(
                                     IndexedEvent(idx=i, event=event)
@@ -469,7 +485,7 @@ class Master:
         while True:
             # kill broken instances
             connected_node_ids = set(self.state.topology.list_nodes())
-            for instance_id, instance in self.state.instances.items():
+            for instance_id, instance in list(self.state.instances.items()):
                 for node_id in instance.shard_assignments.node_to_runner:
                     if node_id not in connected_node_ids:
                         await self.event_sender.send(
@@ -478,11 +494,111 @@ class Master:
                         break
 
             # time out dead nodes
-            for node_id, time in self.state.last_seen.items():
+            for node_id, time in list(self.state.last_seen.items()):
                 now = datetime.now(tz=timezone.utc)
                 if now - time > timedelta(seconds=30):
                     logger.info(f"Manually removing node {node_id} due to inactivity")
                     await self.event_sender.send(NodeTimedOut(node_id=node_id))
+
+            # Clean up stale/orphan running tasks when runners are already ready
+            for task_id, task in list(self.state.tasks.items()):
+                if task.task_status in (TaskStatus.Running, TaskStatus.Pending):
+                    instance = self.state.instances.get(task.instance_id)
+                    if instance and instance.shard_assignments.runner_to_shard:
+                        runners_ready = True
+                        for r_id in instance.shard_assignments.runner_to_shard:
+                            r_status = self.state.runners.get(r_id)
+                            if not isinstance(r_status, RunnerReady):
+                                runners_ready = False
+                                break
+                        if runners_ready:
+                            logger.info(
+                                f"Reaping orphan task {task_id} as all runners for instance {task.instance_id} are Ready"
+                            )
+                            await self.event_sender.send(TaskDeleted(task_id=task_id))
+
+            # Auto-healing for disaggregated cluster:
+            # If 2+ nodes are online and we have active models running without full Prefill+Decode pairing/links, auto-heal!
+            if len(connected_node_ids) >= 2 and self.state.instances:
+                models_active: dict[str, list[tuple[InstanceId, Instance]]] = {}
+                for inst_id, inst in self.state.instances.items():
+                    models_active.setdefault(
+                        inst.shard_assignments.model_id, []
+                    ).append((inst_id, inst))
+
+                for model_id, inst_list in models_active.items():
+                    prefill_inst_ids: list[InstanceId] = []
+                    decode_inst_ids: list[InstanceId] = []
+                    for inst_id, inst in inst_list:
+                        node_ids = list(inst.shard_assignments.node_to_runner.keys())
+                        if not node_ids:
+                            continue
+                        node_id = node_ids[0]
+                        ident = self.state.node_identities.get(node_id)
+                        name = (
+                            getattr(ident, "friendly_name", None)
+                            or getattr(ident, "friendlyName", None)
+                            or (ident.get("friendlyName") if isinstance(ident, dict) else "")
+                            or ""
+                        )
+                        is_mac = "Mac" in str(name)
+
+                        if is_mac:
+                            decode_inst_ids.append(inst_id)
+                        else:
+                            prefill_inst_ids.append(inst_id)
+
+                    # If we have decode on Mac but no prefill on worker, place prefill instance on available worker node
+                    if decode_inst_ids and not prefill_inst_ids:
+                        first_inst = inst_list[0][1]
+                        shard_meta = next(
+                            iter(first_inst.shard_assignments.runner_to_shard.values())
+                        )
+                        model_card = shard_meta.model_card
+
+                        logger.info(
+                            f"Auto-healing: Placing missing Prefill instance for {model_id} on reconnected worker"
+                        )
+                        cmd = PlaceInstance(
+                            model_card=model_card,
+                            sharding=Sharding.Pipeline,
+                            instance_meta=InstanceMeta.MlxRing,
+                            min_nodes=1,
+                            preferred_role="prefill",
+                        )
+                        placement = place_instance(
+                            cmd,
+                            self.state.topology,
+                            self.state.instances,
+                            self.state.node_memory,
+                            self.state.node_network,
+                            self.state.node_backends,
+                            download_status=self.state.downloads,
+                            node_rdma_ctl=self.state.node_rdma_ctl,
+                            node_identities=self.state.node_identities,
+                        )
+                        for ev in get_transition_events(
+                            self.state.instances, placement, self.state.tasks
+                        ):
+                            await self.event_sender.send(ev)
+
+                    # If both prefill and decode instances exist, ensure they are linked
+                    elif prefill_inst_ids and decode_inst_ids:
+                        already_linked = any(
+                            set(link.prefill_instances) == set(prefill_inst_ids)
+                            and set(link.decode_instances) == set(decode_inst_ids)
+                            for link in self.state.instance_links.values()
+                        )
+                        if not already_linked:
+                            logger.info(
+                                f"Auto-healing: Establishing InstanceLink between Prefill {prefill_inst_ids} and Decode {decode_inst_ids}"
+                            )
+                            link = InstanceLink(
+                                link_id=InstanceLinkId(),
+                                prefill_instances=prefill_inst_ids,
+                                decode_instances=decode_inst_ids,
+                            )
+                            await self.event_sender.send(InstanceLinkCreated(link=link))
 
             await anyio.sleep(10)
 
@@ -500,6 +616,20 @@ class Master:
                 for event in self._multi_buffer.drain():
                     if isinstance(event, TracesCollected):
                         await self._handle_traces_collected(event)
+                        continue
+
+                    # High-frequency ephemeral telemetry (MacmonMetrics)
+                    # updates in-memory state in real-time for Dashboard/API without bloating DiskEventLog
+                    if isinstance(event, NodeGatheredInfo) and isinstance(
+                        event.info, MacmonMetrics
+                    ):
+                        event = event.model_copy(
+                            update={
+                                "_master_time_stamp": datetime.now(tz=timezone.utc),
+                                "when": str(datetime.now(tz=timezone.utc)),
+                            }
+                        )
+                        self.state = apply_node_gathered_info(event, self.state)
                         continue
 
                     logger.debug(f"Master indexing event: {str(event)[:100]}")

@@ -25,7 +25,8 @@ from exo.worker.engines.mlx.disaggregated.adapter import (
     inject_rotating_kv_chunk,
 )
 
-_SOCKET_TIMEOUT_SECS = 60
+_CONNECT_TIMEOUT_SECS = 3.0
+_SOCKET_TIMEOUT_SECS = 60.0
 _RECV_BUFFER_BYTES = 4 * 1024 * 1024
 
 
@@ -61,7 +62,8 @@ def remote_prefill_fetch(
         f"({len(request.token_ids)} tokens, start_pos={request.start_pos})"
     )
 
-    sock = socket.create_connection((host, port), timeout=timeout_secs)
+    sock = socket.create_connection((host, port), timeout=_CONNECT_TIMEOUT_SECS)
+    sock.settimeout(timeout_secs)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, _RECV_BUFFER_BYTES)
     try:

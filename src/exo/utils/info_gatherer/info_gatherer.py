@@ -45,16 +45,29 @@ IS_DARWIN = sys.platform == "darwin"
 
 def _get_native_mac_gpu_utilization() -> float | None:
     try:
-        import plistlib
         import subprocess
+        import re
+        import plistlib
 
+        # Try powermetrics first (requires passwordless sudo rule)
         res = subprocess.run(
+            ["sudo", "-n", "powermetrics", "-n", "1", "-i", "100", "--samplers", "gpu_power"],
+            capture_output=True,
+            timeout=1,
+            text=True,
+        )
+        if res.returncode == 0 and res.stdout:
+            match = re.search(r"GPU HW active residency:\s+([\d\.]+)%", res.stdout)
+            if match:
+                return float(match.group(1)) / 100.0
+
+        res_ioreg = subprocess.run(
             ["ioreg", "-r", "-c", "IOAccelerator", "-a"],
             capture_output=True,
             timeout=1,
         )
-        if res.returncode == 0 and res.stdout:
-            data = plistlib.loads(res.stdout)
+        if res_ioreg.returncode == 0 and res_ioreg.stdout:
+            data = plistlib.loads(res_ioreg.stdout)
             if isinstance(data, list) and len(data) > 0:
                 for entry in data:
                     stats = entry.get("PerformanceStatistics", {})
@@ -497,12 +510,12 @@ class InfoGatherer:
     async def run(self):
         async with self._tg as tg:
             if IS_DARWIN:
-                tg.start_soon(self._monitor_macmon, 1)
+                tg.start_soon(self._monitor_macmon, 3)
                 tg.start_soon(self._monitor_system_profiler_thunderbolt_data, 5)
                 tg.start_soon(self._monitor_thunderbolt_bridge_status, 10)
                 tg.start_soon(self._monitor_rdma_ctl_status, 10)
             if not IS_DARWIN:
-                tg.start_soon(self._monitor_linux_gpu, 1)
+                tg.start_soon(self._monitor_linux_gpu, 3)
             tg.start_soon(self._watch_system_info, 10)
             tg.start_soon(self._monitor_misc, 60)
             tg.start_soon(self._monitor_static_info, 60)

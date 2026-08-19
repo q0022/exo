@@ -25,6 +25,8 @@ def remote_prefill(
     request_id: str,
     model_id: str,
     start_pos: int = 0,
+    vision_embeddings: mx.array | None = None,
+    vision_image_token_id: int | None = None,
 ) -> tuple[float, int, list[CacheSnapshot]]:
     t0 = time.perf_counter()
     total_prompt_tokens = int(prompt_tokens.shape[0])
@@ -45,11 +47,27 @@ def remote_prefill(
                 total_prompt_tokens,
             )
 
+    vision_embeddings_bytes: bytes | None = None
+    vision_embeddings_shape: list[int] | None = None
+    vision_embeddings_dtype: str | None = None
+    if vision_embeddings is not None:
+        import numpy as np
+
+        emb_f16 = vision_embeddings.astype(mx.float16)
+        emb_np = np.array(emb_f16)
+        vision_embeddings_bytes = emb_np.tobytes()
+        vision_embeddings_shape = list(vision_embeddings.shape)
+        vision_embeddings_dtype = "float16"
+
     request = PrefillRequest(
         model_id=model_id,
         token_ids=cast(list[int], prompt_tokens.tolist()),
         start_pos=start_pos,
         request_id=request_id,
+        vision_embeddings_bytes=vision_embeddings_bytes,
+        vision_embeddings_shape=vision_embeddings_shape,
+        vision_embeddings_dtype=vision_embeddings_dtype,
+        vision_image_token_id=vision_image_token_id,
     )
     result = remote_prefill_fetch(
         endpoint, request, on_header=_on_header, on_kv_chunk=_on_chunk
@@ -58,6 +76,17 @@ def remote_prefill(
 
     caches = cast(list[KVCache | RotatingKVCache | ArraysCache], list(cache))
     final_offset = ingest_into_mlx_cache(result, caches, start_pos=start_pos)
+
+    # Materialize all injected cache arrays immediately to prevent Metal concatenation graph depth accumulation
+    eval_arrays = []
+    for c in caches:
+        if hasattr(c, "keys") and getattr(c, "keys", None) is not None:
+            eval_arrays.append(c.keys)
+        if hasattr(c, "values") and getattr(c, "values", None) is not None:
+            eval_arrays.append(c.values)
+    if eval_arrays:
+        mx.eval(*eval_arrays)
+
     t_done = time.perf_counter()
 
     num_tokens = final_offset - start_pos

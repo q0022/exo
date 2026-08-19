@@ -1,0 +1,25 @@
+model_id = "mlx-community/Llama-4-Maverick-17B-16E-Instruct-4bit"
+n_layers = 48
+hidden_size = 5120
+num_key_value_heads = 8
+supports_tensor = true
+tasks = ["TextGeneration"]
+family = "llama"
+quantization = "4bit"
+base_model = "Llama 4 Maverick 17B 16E"
+capabilities = ["text", "vision"]
+
+context_length = 1048576
+backends = ["MlxMetal", "MlxCuda", "MlxCpu"]
+
+[storage_size]
+in_bytes = 225429268340
+
+[vision]
+image_token_id = 200092
+model_type = "llama4_vision_model"
+weights_repo = "mlx-community/Llama-4-Maverick-17B-16E-Instruct-4bit"
+
+[sampling_defaults]
+temperature = 0.6
+top_p = 0.9

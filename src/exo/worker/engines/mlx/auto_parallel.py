@@ -117,6 +117,41 @@ class CustomMlxLayer(nn.Module):
                 return getattr(original_layer, name)
 
 
+def _chunked_send(output: mx.array, dest: int, group: mx.distributed.Group, chunk_size: int = 1024) -> mx.array:
+    if output.ndim >= 2:
+        seq_axis = output.ndim - 2
+        seq_len = output.shape[seq_axis]
+        if seq_len > chunk_size:
+            sent_chunks = []
+            for i in range(0, seq_len, chunk_size):
+                end = min(i + chunk_size, seq_len)
+                if seq_axis == 1:
+                    chunk = output[:, i:end, :]
+                else:
+                    chunk = output[i:end, :]
+                chunk = mx.distributed.send(chunk, dest, group=group)
+                sent_chunks.append(chunk)
+            return mx.concatenate(sent_chunks, axis=seq_axis)
+    return mx.distributed.send(output, dest, group=group)
+
+def _chunked_recv_like(x: mx.array, src: int, group: mx.distributed.Group, chunk_size: int = 1024) -> mx.array:
+    if x.ndim >= 2:
+        seq_axis = x.ndim - 2
+        seq_len = x.shape[seq_axis]
+        if seq_len > chunk_size:
+            received_chunks = []
+            for i in range(0, seq_len, chunk_size):
+                end = min(i + chunk_size, seq_len)
+                if seq_axis == 1:
+                    chunk_placeholder = x[:, i:end, :]
+                else:
+                    chunk_placeholder = x[i:end, :]
+                chunk = mx.distributed.recv_like(chunk_placeholder, src, group=group)
+                received_chunks.append(chunk)
+            return mx.concatenate(received_chunks, axis=seq_axis)
+    return mx.distributed.recv_like(x, src, group=group)
+
+
 class PipelineFirstLayer(CustomMlxLayer):
     def __init__(
         self,
@@ -134,7 +169,7 @@ class PipelineFirstLayer(CustomMlxLayer):
             # We want to avoid GPU timeout errors by evalling the distributed operation
             # so that it stays on CPU, which does not have a timeout.
             mx.eval(x)
-            x = mx.distributed.recv_like(x, (self.r - 1), group=self.group)
+            x = _chunked_recv_like(x, (self.r - 1), group=self.group)
             mx.eval(x)
         return self.original_layer(x, *args, **kwargs)
 
@@ -172,7 +207,7 @@ class PipelineLastLayer(CustomMlxLayer):
                     (output, (self.r + 1) % self.s, self.group)
                 )
             else:
-                output = mx.distributed.send(
+                output = _chunked_send(
                     output, (self.r + 1) % self.s, group=self.group
                 )
             if cache is not None:

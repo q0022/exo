@@ -206,3 +206,19 @@ GitHub's API doesn't support direct image upload for PR comments. Workaround:
 - **Primary Path**: `macmon` daemon (`~/.cargo/bin/macmon`) reads Apple Silicon SMC performance registers (`pcpu_usage`, `ecpu_usage`, Metal GPU, Watts).
 - **Native Fallback**: `psutil` + `ioreg` (`_monitor_mac_system` in `info_gatherer.py`). Uses `psutil.cpu_percent(interval=None)` (exact btop method) and `ioreg -r -c IOAccelerator -a` (`Device Utilization %`).
 - **Frontend Dashboard**: Parsed separately in `parseMacTelemetry(sysProfile, tick)` in `monitor/+page.svelte` preserving unrounded float precision and btop-style core shifting jitter for smooth live SVG sparklines and block meters.
+
+## Cluster Operations & Services
+
+The cluster runs via background services, NOT manual terminal commands. Never attempt to restart `exo` using `kill` or `ps aux`.
+
+**Master Node (Mac Studio - .99)**:
+- Managed by macOS `launchctl`.
+- Service name: `com.exo.cluster`
+- Restart command: `launchctl stop com.exo.cluster && sleep 2 && launchctl start com.exo.cluster`
+- **Important**: Must run via SSH (e.g. `ssh q0022@192.168.1.99`) if you are operating from the `.144` local agent workspace.
+
+**Worker Node (DGX - .98)**:
+- Managed by Linux user `systemd`.
+- Service name: `exo.service`
+- Restart command: `systemctl --user restart exo`
+- **Important**: Must run via SSH with correct port (e.g. `ssh -p 2223 q0022@183.88.235.236`).

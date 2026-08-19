@@ -87,6 +87,17 @@ class Node:
         else:
             download_coordinator = None
 
+        # We start every node with a master
+        master = Master(
+            node_id,
+            session_id,
+            event_sender=event_router.sender(),
+            global_event_sender=router.sender(topics.GLOBAL_EVENTS),
+            local_event_receiver=router.receiver(topics.LOCAL_EVENTS),
+            command_receiver=router.receiver(topics.COMMANDS),
+            download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
+        )
+
         if args.spawn_api:
             api = API(
                 node_id,
@@ -95,6 +106,7 @@ class Node:
                 command_sender=router.sender(topics.COMMANDS),
                 download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
                 election_receiver=router.receiver(topics.ELECTION_MESSAGES),
+                master_state_getter=lambda: master.state,
             )
         else:
             api = None
@@ -110,17 +122,6 @@ class Node:
             )
         else:
             worker = None
-
-        # We start every node with a master
-        master = Master(
-            node_id,
-            session_id,
-            event_sender=event_router.sender(),
-            global_event_sender=router.sender(topics.GLOBAL_EVENTS),
-            local_event_receiver=router.receiver(topics.LOCAL_EVENTS),
-            command_receiver=router.receiver(topics.COMMANDS),
-            download_command_sender=router.sender(topics.DOWNLOAD_COMMANDS),
-        )
 
         er_send, er_recv = channel[ElectionResult]()
         election = Election(

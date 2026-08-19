@@ -433,27 +433,22 @@ class VisionEncoder:
         needs_sanitize = False
 
         for sf_path in safetensors_files:
-            with safe_open(str(sf_path), framework="pt") as f:
-                keys = cast(list[str], list(f.keys()))  # type: ignore
-                for key in keys:
-                    matched = False
-                    for prefix in vision_prefixes:
-                        if key.startswith(prefix):
-                            vision_weights[key[len(prefix) :]] = _torch_tensor_to_mx(
-                                f.get_tensor(key)
-                            )
-                            if prefix == "model.visual.":
-                                needs_sanitize = True
-                            matched = True
-                            break
-                    if matched:
-                        continue
-                    for prefix in projector_prefixes:
-                        if key.startswith(prefix):
-                            projector_weights[key[len(prefix) :]] = _torch_tensor_to_mx(
-                                f.get_tensor(key)
-                            )
-                            break
+            sf_dict = mx.load(str(sf_path))
+            for key, tensor in sf_dict.items():
+                matched = False
+                for prefix in vision_prefixes:
+                    if key.startswith(prefix):
+                        vision_weights[key[len(prefix) :]] = tensor
+                        if prefix == "model.visual.":
+                            needs_sanitize = True
+                        matched = True
+                        break
+                if matched:
+                    continue
+                for prefix in projector_prefixes:
+                    if key.startswith(prefix):
+                        projector_weights[key[len(prefix) :]] = tensor
+                        break
 
         if not vision_weights:
             raise ValueError(

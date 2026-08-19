@@ -401,27 +401,58 @@ class KVPrefixCache:
         cached_regions: list["MediaRegion"],
         query_regions: list["MediaRegion"],
     ) -> int:
-        if not cached_regions:
+        if not cached_regions and not query_regions:
             return match_length
+
+        if not cached_regions:
+            first_pos = min((r.start_pos for r in query_regions), default=0)
+            return min(match_length, first_pos)
+
+        if not query_regions:
+            first_pos = min((r.start_pos for r in cached_regions), default=0)
+            return min(match_length, first_pos)
 
         query_by_start: dict[int, "MediaRegion"] = {
             r.start_pos: r for r in query_regions
+        }
+        cached_by_start: dict[int, "MediaRegion"] = {
+            r.start_pos: r for r in cached_regions
         }
 
         for cached_r in cached_regions:
             if cached_r.start_pos >= match_length:
                 break
             query_r = query_by_start.get(cached_r.start_pos)
-            if query_r is None:
-                continue
-            if query_r.content_hash != cached_r.content_hash:
+            if (
+                query_r is None
+                or query_r.content_hash != cached_r.content_hash
+                or (query_r.end_pos - query_r.start_pos)
+                != (cached_r.end_pos - cached_r.start_pos)
+            ):
                 logger.info(
                     f"Media region mismatch at pos {cached_r.start_pos}: "
-                    f"cached={cached_r.content_hash[:12]}... "
-                    f"query={query_r.content_hash[:12]}... — "
+                    f"cached={cached_r.content_hash[:12]}... — "
                     f"truncating match from {match_length} to {cached_r.start_pos}"
                 )
-                match_length = cached_r.start_pos
+                match_length = min(match_length, cached_r.start_pos)
+                break
+
+        for query_r in query_regions:
+            if query_r.start_pos >= match_length:
+                break
+            cached_r = cached_by_start.get(query_r.start_pos)
+            if (
+                cached_r is None
+                or cached_r.content_hash != query_r.content_hash
+                or (query_r.end_pos - query_r.start_pos)
+                != (cached_r.end_pos - cached_r.start_pos)
+            ):
+                logger.info(
+                    f"Media region query mismatch at pos {query_r.start_pos}: "
+                    f"query={query_r.content_hash[:12]}... — "
+                    f"truncating match from {match_length} to {query_r.start_pos}"
+                )
+                match_length = min(match_length, query_r.start_pos)
                 break
 
         return match_length

@@ -206,6 +206,7 @@ class ExoBatchGenerator:
         use_remote = (
             uncached_count > REMOTE_PREFILL_MIN_TOKENS
             and task_params.prefill_endpoint is not None
+            and vision is None
         )
 
         _prefill_tps: float = 0.0

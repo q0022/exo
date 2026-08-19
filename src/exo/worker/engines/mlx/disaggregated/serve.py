@@ -1,6 +1,8 @@
+import contextlib
 import time
 
 import mlx.core as mx
+import numpy as np
 from mlx_lm.sample_utils import make_sampler
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
@@ -11,6 +13,7 @@ from exo.worker.engines.mlx.cache import (
     make_kv_cache,
     snapshot_ssm_states,
 )
+from exo.worker.engines.mlx.generator.generate import patch_embed_tokens
 from exo.worker.engines.mlx.generator.generate import prefill as mlx_prefill
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.engines.mlx.utils_mlx import fix_unmatched_think_end_tokens
@@ -44,18 +47,46 @@ def run_prefill_for_request(
     target_offset = max(0, n_tokens - 2)
     new_tokens = max(0, target_offset - prefix_hit_length)
     prefill_input = remaining[:new_tokens]
+
+    maybe_vision_ctx = contextlib.nullcontext()
+    if (
+        request.vision_embeddings_bytes is not None
+        and request.vision_embeddings_shape is not None
+    ):
+        try:
+            dtype_name = request.vision_embeddings_dtype or "float16"
+            np_dtype = (
+                np.float16 if dtype_name in ("float16", "bfloat16") else np.float32
+            )
+            arr_np = np.frombuffer(
+                request.vision_embeddings_bytes, dtype=np_dtype
+            ).reshape(request.vision_embeddings_shape)
+            vision_embeddings = mx.array(arr_np)
+            maybe_vision_ctx = patch_embed_tokens(
+                model,
+                vision_embeddings,
+                start_offset=prefix_hit_length,
+                token_count=new_tokens,
+                image_token_id=request.vision_image_token_id,
+            )
+        except Exception:
+            logger.opt(exception=True).warning(
+                "Failed to deserialize and patch vision embeddings on prefill server"
+            )
+
     if int(prefill_input.shape[0]) > 0:
         sampler = make_sampler(temp=1.0)
-        _ = mlx_prefill(
-            model=model,
-            tokenizer=tokenizer,
-            sampler=sampler,
-            prompt_tokens=prefill_input,
-            cache=cache,
-            group=group,
-            on_prefill_progress=None,
-            distributed_prompt_progress_callback=None,
-        )
+        with maybe_vision_ctx:
+            _ = mlx_prefill(
+                model=model,
+                tokenizer=tokenizer,
+                sampler=sampler,
+                prompt_tokens=prefill_input,
+                cache=cache,
+                group=group,
+                on_prefill_progress=None,
+                distributed_prompt_progress_callback=None,
+            )
 
     if kv_prefix_cache is not None:
         try:

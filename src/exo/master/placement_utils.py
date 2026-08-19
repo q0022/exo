@@ -350,6 +350,12 @@ def find_ip_prioritised(
     ips = list(_find_connection_ip(node_id, other_node_id, cycle_digraph))
     if not ips:
         return None
+
+    # Always prioritize 10Gbps dedicated direct link (192.168.2.x)
+    direct_10g_ips = [ip for ip in ips if ip.startswith("192.168.2.")]
+    if direct_10g_ips:
+        return direct_10g_ips[0]
+
     other_network = node_network.get(other_node_id, NodeNetworkInfo())
     ip_to_type = {
         iface.ip_address: iface.interface_type for iface in other_network.interfaces

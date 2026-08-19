@@ -188,6 +188,7 @@ def inject_kv_chunk(
         cache.keys = k_bhsd
         cache.values = v_bhsd
     cache.offset = offset
+    mx.eval(cache.keys, cache.values)
 
 
 def inject_rotating_kv_chunk(
@@ -202,10 +203,13 @@ def inject_rotating_kv_chunk(
     cache.values = v_bhsd
     cache.offset = offset
     cache._idx = int(k_bhsd.shape[2])
+    mx.eval(cache.keys, cache.values)
 
 
 def inject_arrays_cache(cache: ArraysCache, blobs: list[TensorBlob]) -> None:
     cache.state = [blob_to_mlx(b) for b in blobs]
+    if cache.state:
+        mx.eval(*cache.state)
 
 
 def write_cache_to_wire(

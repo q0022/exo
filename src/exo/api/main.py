@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -5,7 +6,7 @@ import json
 import random
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -257,8 +258,10 @@ class API:
         download_command_sender: Sender[ForwarderDownloadCommand],
         # This lets us pause the API if an election is running
         election_receiver: Receiver[ElectionMessage],
+        master_state_getter: Callable[[], State | None] | None = None,
     ) -> None:
         self.state = State()
+        self._master_state_getter = master_state_getter
         self._event_log = DiskEventLog(_API_EVENT_LOG_DIR)
         self._system_id = SystemId()
         self.command_sender = command_sender
@@ -309,7 +312,38 @@ class API:
         self._event_log = DiskEventLog(_API_EVENT_LOG_DIR)
         self.state = State()
         self._system_id = SystemId()
+        for cmd_id, sender in list(self._text_generation_queues.items()):
+            try:
+                sender.send_nowait(
+                    ErrorChunk(
+                        finish_reason="error",
+                        error_message="Cluster election or state reset in progress. Please retry.",
+                        command_id=cmd_id,
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                sender.close()
+            except Exception:
+                pass
         self._text_generation_queues = {}
+
+        for cmd_id, sender in list(self._image_generation_queues.items()):
+            try:
+                sender.send_nowait(
+                    ErrorChunk(
+                        finish_reason="error",
+                        error_message="Cluster election or state reset in progress. Please retry.",
+                        command_id=cmd_id,
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                sender.close()
+            except Exception:
+                pass
         self._image_generation_queues = {}
         self.unpause(result_clock)
         self.event_receiver.close()
@@ -350,6 +384,7 @@ class API:
 
     def _setup_routes(self) -> None:
         self.app.get("/node_id")(lambda: self.node_id)
+        self.app.get("/health/logs")(self.get_health_logs)
         self.app.post("/instance")(self.create_instance)
         self.app.post("/place_instance")(self.place_instance)
         self.app.get("/instance/placement")(self.get_placement)
@@ -416,10 +451,24 @@ class API:
         self.app.post("/onboarding")(self.complete_onboarding)
 
     def get_state(self, path: str = ""):
+        state = self.state
+        if self._master_state_getter is not None:
+            master_state = self._master_state_getter()
+            if master_state is not None:
+                updates: dict[str, object] = {}
+                if master_state.node_system:
+                    updates["node_system"] = master_state.node_system
+                if master_state.node_memory:
+                    updates["node_memory"] = master_state.node_memory
+                if master_state.last_seen:
+                    updates["last_seen"] = master_state.last_seen
+                if updates:
+                    state = state.model_copy(update=updates)
+
         if path == "":
-            return self.state
+            return state
         try:
-            x = self.state.model_dump(by_alias=True)
+            x = state.model_dump(by_alias=True)
             for attr in path.split("/"):
                 if attr != "":
                     if isinstance(x, dict):
@@ -436,8 +485,84 @@ class API:
     async def place_instance(self, payload: PlaceInstanceParams):
         sharding = payload.sharding or Sharding.Pipeline
         instance_meta = payload.instance_meta or InstanceMeta.MlxRing
+        model_card = await ModelCard.load(payload.model_id)
+
+        # If disaggregation is enabled and no explicit role was requested,
+        # automatically create a linked Prefill (DGX) + Decode (Mac) pair if 2+ nodes are online
+        if ENABLE_DISAGGREGATION and payload.preferred_role is None and len(self.state.node_identities) >= 2:
+            existing_for_model = [
+                inst_id
+                for inst_id, inst in self.state.instances.items()
+                if inst.shard_assignments.model_id == payload.model_id
+            ]
+            for old_id in existing_for_model:
+                await self._send(DeleteInstance(instance_id=old_id))
+
+            cmd_prefill = PlaceInstance(
+                model_card=model_card,
+                sharding=sharding,
+                instance_meta=instance_meta,
+                min_nodes=payload.min_nodes,
+                preferred_role="prefill",
+            )
+            cmd_decode = PlaceInstance(
+                model_card=model_card,
+                sharding=sharding,
+                instance_meta=instance_meta,
+                min_nodes=payload.min_nodes,
+                preferred_role="decode",
+            )
+            await self._send(cmd_prefill)
+            await self._send(cmd_decode)
+
+            async def _auto_link_disaggregation_instances():
+                for _ in range(40):
+                    await asyncio.sleep(0.5)
+                    prefill_inst_ids: list[InstanceId] = []
+                    decode_inst_ids: list[InstanceId] = []
+                    for inst_id, inst in self.state.instances.items():
+                        if inst.shard_assignments.model_id != payload.model_id:
+                            continue
+                        node_ids = list(inst.shard_assignments.node_to_runner.keys())
+                        if not node_ids:
+                            continue
+                        node_id = node_ids[0]
+                        ident = self.state.node_identities.get(node_id)
+                        is_mac = False
+                        if hasattr(ident, "friendly_name") and "Mac" in getattr(ident, "friendly_name", ""):
+                            is_mac = True
+                        elif hasattr(ident, "friendlyName") and "Mac" in getattr(ident, "friendlyName", ""):
+                            is_mac = True
+                        elif isinstance(ident, dict) and "Mac" in str(ident.get("friendlyName", "")):
+                            is_mac = True
+
+                        if is_mac:
+                            decode_inst_ids.append(inst_id)
+                        else:
+                            prefill_inst_ids.append(inst_id)
+
+                    if prefill_inst_ids and decode_inst_ids:
+                        link_cmd = SetInstanceLink(
+                            link_id=InstanceLinkId(),
+                            prefill_instances=prefill_inst_ids,
+                            decode_instances=decode_inst_ids,
+                        )
+                        await self._send(link_cmd)
+                        logger.info(
+                            f"Auto-linked Disaggregation instances for {payload.model_id}: prefill={prefill_inst_ids}, decode={decode_inst_ids}"
+                        )
+                        break
+
+            asyncio.create_task(_auto_link_disaggregation_instances())
+
+            return CreateInstanceResponse(
+                message="Command received. Auto-disaggregation enabled (DGX Prefill + Mac Decode).",
+                command_id=cmd_decode.command_id,
+                model_card=model_card,
+            )
+
         command = PlaceInstance(
-            model_card=await ModelCard.load(payload.model_id),
+            model_card=model_card,
             sharding=sharding,
             instance_meta=instance_meta,
             min_nodes=payload.min_nodes,
@@ -450,6 +575,85 @@ class API:
             command_id=command.command_id,
             model_card=command.model_card,
         )
+
+    async def get_health_logs(self):
+        log_file = Path.home() / ".exo" / "exo_log" / "exo.log"
+        lines = []
+        recent_errors = []
+        now = datetime.now()
+        cutoff_5m = now - timedelta(minutes=5)
+
+        if log_file.exists():
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                    all_lines = f.readlines()
+                    lines = [l.strip() for l in all_lines[-40:]]
+                    for raw_l in all_lines[-200:]:
+                        l = raw_l.strip()
+                        if any(
+                            k in l
+                            for k in [
+                                "ERROR",
+                                "CRITICAL",
+                                "Traceback",
+                                "Resource limit",
+                                "exitcode=1",
+                            ]
+                        ):
+                            is_recent = False
+                            if l.startswith("[") and "|" in l:
+                                try:
+                                    ts_str = l.split("|")[0].replace("[", "").strip()
+                                    log_dt = datetime.strptime(ts_str.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                                    if log_dt >= cutoff_5m:
+                                        is_recent = True
+                                except Exception:
+                                    is_recent = False
+                            else:
+                                # For continuation lines without timestamp, check context or ignore old
+                                pass
+
+                            if is_recent:
+                                recent_errors.append(l)
+            except Exception as e:
+                lines = [f"Error reading log file: {e}"]
+
+        nodes = []
+        for nid, ident in self.state.node_identities.items():
+            name = (
+                getattr(ident, "friendly_name", None)
+                or getattr(ident, "friendlyName", None)
+                or (ident.get("friendlyName") if isinstance(ident, dict) else None)
+                or "Unknown Node"
+            )
+            nodes.append({"node_id": str(nid), "name": str(name)})
+
+        links = [
+            {
+                "link_id": str(l.link_id),
+                "prefill_instances": [str(i) for i in l.prefill_instances],
+                "decode_instances": [str(i) for i in l.decode_instances],
+            }
+            for l in self.state.instance_links.values()
+        ]
+
+        active_models = [
+            {
+                "instance_id": str(inst_id),
+                "model_id": str(inst.shard_assignments.model_id),
+            }
+            for inst_id, inst in self.state.instances.items()
+        ]
+
+        return {
+            "status": "healthy" if not recent_errors else "has_errors",
+            "nodes_online": len(nodes),
+            "nodes": nodes,
+            "active_models": active_models,
+            "instance_links": links,
+            "recent_errors": recent_errors[-10:],
+            "recent_logs": lines[-20:],
+        }
 
     async def create_instance(
         self, payload: CreateInstanceParams
@@ -760,7 +964,7 @@ class API:
     async def _collect_text_generation_with_stats(
         self, command_id: CommandId
     ) -> BenchChatCompletionResponse:
-        sampler = PowerSampler(get_node_system=lambda: self.state.node_system)
+        sampler = PowerSampler(get_node_system=lambda: self.get_state().node_system)
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         model: ModelId | None = None
@@ -1288,7 +1492,7 @@ class API:
         num_images: int,
         response_format: str,
     ) -> BenchImageGenerationResponse:
-        sampler = PowerSampler(get_node_system=lambda: self.state.node_system)
+        sampler = PowerSampler(get_node_system=lambda: self.get_state().node_system)
         images: list[ImageData] = []
         stats: ImageGenerationStats | None = None
         async with anyio.create_task_group() as tg:

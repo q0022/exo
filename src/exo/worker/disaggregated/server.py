@@ -21,6 +21,10 @@ class PrefillRequest(msgspec.Struct):
     model_id: str = ""
     token_ids: list[int] = msgspec.field(default_factory=list)
     start_pos: int = 0
+    vision_embeddings_bytes: bytes | None = None
+    vision_embeddings_shape: list[int] | None = None
+    vision_embeddings_dtype: str | None = None
+    vision_image_token_id: int | None = None
 
 
 _request_encoder = msgspec.msgpack.Encoder()

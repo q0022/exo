@@ -114,7 +114,7 @@ class EventRouter:
                 self.out_for_delivery[event.event_id] = (anyio.current_time(), f_ev)
 
     async def _run_ext_in(self):
-        buf = OrderedBuffer[Event]()
+        buf = self.event_buffer
         with self.external_inbound as events:
             async for event in events:
                 if event.session != self.session_id:
@@ -159,8 +159,9 @@ class EventRouter:
         if since_idx < 0 or self._nack_attempts > 4:
             if self._nack_attempts > 4:
                 logger.warning(
-                    f"Nack attempt {self._nack_attempts} exceeded threshold, resetting since_idx from {since_idx} to 0"
+                    f"Nack attempt {self._nack_attempts} exceeded threshold, resetting event_buffer and since_idx from {since_idx} to 0"
                 )
+                self.event_buffer.next_idx_to_release = 0
             since_idx = 0
 
         with CancelScope() as scope:

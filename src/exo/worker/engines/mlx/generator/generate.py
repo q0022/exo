@@ -112,7 +112,7 @@ def patch_embed_tokens(
         return mx.concatenate(
             [
                 text_embeds[:, :dst_start, :],
-                embeddings[:, overlap_start:overlap_end, :],
+                embeddings[:, overlap_start:overlap_end, :].astype(text_embeds.dtype),
                 text_embeds[:, dst_end:, :],
             ],
             axis=1,
@@ -640,6 +640,7 @@ def mlx_generate(
     use_remote = (
         len(prompt_tokens) > REMOTE_PREFILL_MIN_TOKENS
         and task.prefill_endpoint is not None
+        and vision is None
     )
     remote_prefilled = False
     prefill_tps = 0.0
@@ -656,6 +657,8 @@ def mlx_generate(
                     request_id=str(uuid.uuid4()),
                     model_id=str(task.model),
                     start_pos=prefix_hit_length,
+                    vision_embeddings=vision.embeddings if vision is not None else None,
+                    vision_image_token_id=vision.image_token_id if vision is not None else None,
                 )
                 remote_prefilled = True
             except Exception:

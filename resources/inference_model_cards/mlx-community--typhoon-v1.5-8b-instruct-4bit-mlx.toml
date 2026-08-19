@@ -1,0 +1,18 @@
+model_id = "mlx-community/typhoon-v1.5-8b-instruct-4bit-mlx"
+n_layers = 32
+hidden_size = 4096
+num_key_value_heads = 8
+supports_tensor = true
+tasks = ["TextGeneration"]
+family = "llama"
+quantization = "4bit"
+base_model = "Typhoon v1.5 8B Instruct"
+capabilities = ["text"]
+
+context_length = 8192
+backends = ["MlxMetal", "MlxCuda", "MlxCpu"]
+[storage_size]
+in_bytes = 4517489037
+
+[sampling_defaults]
+temperature = 0.6
