@@ -2145,8 +2145,14 @@ class API:
     async def _apply_state(self):
         with self.event_receiver as events:
             async for i_event in events:
-                self._event_log.append(i_event.event)
-                self.state = apply(self.state, i_event)
+                try:
+                    self._event_log.append(i_event.event)
+                    self.state = apply(self.state, i_event)
+                except Exception as e:
+                    logger.opt(exception=e).warning(
+                        f"Failed to apply event in API _apply_state: {i_event}"
+                    )
+                    continue
                 event = i_event.event
 
                 if isinstance(event, ChunkGenerated):

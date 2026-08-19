@@ -126,14 +126,26 @@ def event_apply(event: Event, state: State) -> State:
 
 
 def apply(state: State, event: IndexedEvent) -> State:
-    # Just to test that events are only applied in correct order
-    if state.last_event_applied_idx != event.idx - 1:
-        logger.warning(
-            f"Expected event {state.last_event_applied_idx + 1} but received {event.idx}"
+    if state.last_event_applied_idx is not None and event.idx <= state.last_event_applied_idx:
+        logger.debug(
+            f"Ignoring already applied event {event.idx} (last applied: {state.last_event_applied_idx})"
         )
-    assert state.last_event_applied_idx == event.idx - 1
-    new_state: State = event_apply(event.event, state)
-    return new_state.model_copy(update={"last_event_applied_idx": event.idx})
+        return state
+
+    if state.last_event_applied_idx is not None and state.last_event_applied_idx != event.idx - 1:
+        logger.warning(
+            f"Event sequence gap: expected {state.last_event_applied_idx + 1} but received {event.idx}"
+        )
+
+    try:
+        new_state: State = event_apply(event.event, state)
+        return new_state.model_copy(update={"last_event_applied_idx": event.idx})
+    except Exception as e:
+        logger.opt(exception=e).warning(
+            f"Error applying event {event.idx}: {event.event}"
+        )
+        last_idx = max(state.last_event_applied_idx or 0, event.idx)
+        return state.model_copy(update={"last_event_applied_idx": last_idx})
 
 
 def apply_node_download_progress(event: NodeDownloadProgress, state: State) -> State:
