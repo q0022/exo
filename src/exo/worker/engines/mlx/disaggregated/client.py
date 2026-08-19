@@ -26,7 +26,7 @@ from exo.worker.engines.mlx.disaggregated.adapter import (
 )
 
 _CONNECT_TIMEOUT_SECS = 3.0
-_SOCKET_TIMEOUT_SECS = 60.0
+_SOCKET_TIMEOUT_SECS = 300.0
 _RECV_BUFFER_BYTES = 4 * 1024 * 1024
 
 
