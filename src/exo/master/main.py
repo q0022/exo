@@ -113,10 +113,16 @@ def _prefill_endpoint_for(state: State, decode_instance_id: InstanceId) -> str |
             port = state.prefill_server_ports.get(runner_id)
             if port is None:
                 continue
-            # Prioritize 10Gbps direct interface (192.168.2.*) first
+            # Prioritize 10Gbps direct interface (192.168.2.*) ONLY if BOTH decode_node and node_id share the 192.168.2.* subnet
             ip: str | None = None
+            decode_network = state.node_network.get(decode_node)
+            decode_has_direct_link = (
+                any(iface.ip_address.startswith("192.168.2.") for iface in decode_network.interfaces)
+                if decode_network
+                else False
+            )
             other_network = state.node_network.get(node_id)
-            if other_network:
+            if decode_has_direct_link and other_network:
                 for iface in other_network.interfaces:
                     if iface.ip_address.startswith("192.168.2."):
                         ip = iface.ip_address
