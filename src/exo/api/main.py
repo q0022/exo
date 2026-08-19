@@ -2224,7 +2224,13 @@ class API:
                 logger.debug(f"Cleaned up {removed} expired images")
 
     async def _send(self, command: Command):
-        await self.paused_ev.wait()
+        try:
+            with anyio.fail_after(3.0):
+                await self.paused_ev.wait()
+        except TimeoutError:
+            logger.warning(
+                f"API paused_ev wait timed out, proceeding to send command: {command}"
+            )
         await self.command_sender.send(
             ForwarderCommand(origin=self._system_id, command=command)
         )
