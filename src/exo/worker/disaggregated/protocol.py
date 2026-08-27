@@ -31,6 +31,8 @@ class KVChunk(msgspec.Struct, tag="kv_chunk"):
     dtype: DType
     keys: bytes
     values: bytes
+    k_scale: bytes | None = None
+    v_scale: bytes | None = None
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -123,6 +125,8 @@ def write_kv_chunk(
     dtype: DType,
     keys: bytes,
     values: bytes,
+    k_scale: bytes | None = None,
+    v_scale: bytes | None = None,
 ) -> None:
     write_message(
         stream,
@@ -134,6 +138,8 @@ def write_kv_chunk(
             dtype=dtype,
             keys=keys,
             values=values,
+            k_scale=k_scale,
+            v_scale=v_scale,
         ),
     )
 

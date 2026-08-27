@@ -1,3 +1,4 @@
+import os
 from typing import BinaryIO
 
 import mlx.core as mx
@@ -78,6 +79,35 @@ def bytes_to_array(data: bytes, shape: tuple[int, ...], dtype: DType) -> mx.arra
             return mx.array(arr)
 
 
+def quantize_kv_int8(t: mx.array) -> tuple[bytes, bytes]:
+    """
+    Quantizes a 3D NHD tensor (num_tokens, n_heads, head_dim) to per-head INT8.
+    Returns: (int8_bytes, float16_scale_bytes)
+    """
+    max_val = mx.maximum(mx.max(mx.abs(t), axis=-1, keepdims=True), 1e-7)
+    scale = max_val / 127.0
+    q = mx.clip(mx.round(t / scale), -127, 127).astype(mx.int8)
+    scale_f16 = scale.astype(mx.float16)
+    mx.eval(q, scale_f16)
+    return np.asarray(q).tobytes(), np.asarray(scale_f16).tobytes()
+
+
+def dequantize_kv_int8(
+    q_bytes: bytes,
+    scale_bytes: bytes,
+    shape: tuple[int, int, int],
+    target_dtype: mx.Dtype = mx.bfloat16,
+) -> mx.array:
+    """
+    Dequantizes per-head INT8 bytes and float16 scale bytes back to target_dtype NHD tensor.
+    """
+    num_tokens, n_heads, head_dim = shape
+    scale_shape = (num_tokens, n_heads, 1)
+    q_arr = mx.array(np.frombuffer(q_bytes, dtype=np.int8).reshape(shape))
+    s_arr = mx.array(np.frombuffer(scale_bytes, dtype=np.float16).reshape(scale_shape))
+    return (q_arr.astype(target_dtype) * s_arr.astype(target_dtype))
+
+
 def bhsd_to_nhd(t: mx.array) -> mx.array:
     if t.ndim != 4 or int(t.shape[0]) != 1:
         raise ValueError(f"Expected BHSD with B=1, got shape={tuple(t.shape)}")
@@ -98,6 +128,11 @@ def send_mlx_kv_cache(
     start_pos: int = 0,
     max_tokens: int | None = None,
 ) -> int:
+    enable_wire_quant = os.environ.get("EXO_ENABLE_KV_QUANT", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     tokens_sent = 0
     for layer_idx, c in enumerate(caches):
         match c:
@@ -122,6 +157,16 @@ def send_mlx_kv_cache(
                 num_tokens = int(k_nhd.shape[0])
                 n_heads = int(k_nhd.shape[1])
                 head_dim = int(k_nhd.shape[2])
+
+                if enable_wire_quant:
+                    k_bytes, k_scale = quantize_kv_int8(k_nhd)
+                    v_bytes, v_scale = quantize_kv_int8(v_nhd)
+                else:
+                    k_bytes = array_to_bytes(k_nhd)
+                    k_scale = None
+                    v_bytes = array_to_bytes(v_nhd)
+                    v_scale = None
+
                 write_kv_chunk(
                     stream,
                     layer_idx=layer_idx,
@@ -129,8 +174,10 @@ def send_mlx_kv_cache(
                     n_heads=n_heads,
                     head_dim=head_dim,
                     dtype=dtype,
-                    keys=array_to_bytes(k_nhd),
-                    values=array_to_bytes(v_nhd),
+                    keys=k_bytes,
+                    values=v_bytes,
+                    k_scale=k_scale,
+                    v_scale=v_scale,
                 )
                 if tokens_sent != 0 and num_tokens != tokens_sent:
                     logger.critical(
@@ -159,6 +206,12 @@ def send_mlx_kv_cache(
 
 def chunk_to_mlx_nhd(chunk: KVChunk) -> tuple[mx.array, mx.array]:
     shape = chunk.shape
+    orig_dtype = str_to_mx_dtype(chunk.dtype)
+    if chunk.k_scale is not None and chunk.v_scale is not None:
+        return (
+            dequantize_kv_int8(chunk.keys, chunk.k_scale, shape, orig_dtype),
+            dequantize_kv_int8(chunk.values, chunk.v_scale, shape, orig_dtype),
+        )
     return (
         bytes_to_array(chunk.keys, shape, chunk.dtype),
         bytes_to_array(chunk.values, shape, chunk.dtype),
